@@ -1,0 +1,28 @@
+{
+  "_readme": [
+    "Merge the 'hooks' block into ~/.claude/settings.json.",
+    "Install first: uv tool install path/to/claude-buddy-bridge",
+    "Start the daemon: buddy-bridge &",
+    "BUDDY_TIMEOUT=0  — display only, never blocks Claude Code (default)",
+    "BUDDY_TIMEOUT=30 — wait up to 30 s for deny on device, then auto-approve"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [{ "type": "command", "command": "buddy-hook pre-tool" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [{ "type": "command", "command": "buddy-hook post-tool" }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "buddy-hook stop" }]
+      }
+    ]
+  }
+}

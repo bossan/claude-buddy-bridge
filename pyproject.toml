@@ -1,0 +1,18 @@
+[project]
+name = "claude-buddy-bridge"
+version = "0.1.1"
+description = "BLE bridge and Claude Code hooks for the Claude desk buddy"
+requires-python = ">=3.11"
+dependencies = ["bleak>=0.21", "rumps>=0.4"]
+
+[project.scripts]
+buddy-bridge = "buddy.bridge:main"
+buddy-hook   = "buddy.hook:main"
+buddy-app    = "buddy.app:main"
+
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/buddy"]
