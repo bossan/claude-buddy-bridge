@@ -3,7 +3,13 @@ name = "claude-buddy-bridge"
 version = "0.1.1"
 description = "BLE bridge and Claude Code hooks for the Claude desk buddy"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Sander Bos" }]
 dependencies = ["bleak>=0.21", "rumps>=0.4"]
+
+[project.urls]
+Repository = "https://github.com/bossan/claude-buddy-bridge"
+"Related Project" = "https://github.com/anthropics/claude-desktop-buddy"
 
 [project.scripts]
 buddy-bridge = "buddy.bridge:main"
