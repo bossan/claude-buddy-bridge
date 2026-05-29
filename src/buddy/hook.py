@@ -2,14 +2,15 @@
 buddy-hook — Claude Code hook side-car.
 
 Called by Claude Code for each hook event; forwards it to buddy-bridge via a
-Unix socket. Exits 0 (allow) if the daemon is unreachable so Claude Code is
-never blocked by a missing bridge.
+Unix socket. Always exits 0 — fail-open is mandatory so Claude Code is never
+blocked by a missing or misbehaving daemon.
 
 Configured in ~/.claude/settings.json — see hooks.json.
 
 Environment variables:
   BUDDY_TIMEOUT   Seconds to wait for a deny on the device before
-                  auto-approving.  0 = display only.  Default: 30.
+                  auto-approving.  0 = display-only mode (never gates).
+                  Default: 30.
   BUDDY_DEVICE    BLE device name prefix to scan for (default "Claude").
 """
 
@@ -19,8 +20,9 @@ import socket
 import sys
 import time
 
-SOCKET_PATH      = f"/tmp/buddy-bridge-{os.getuid()}.sock"
-CONNECT_TIMEOUT  = 2.0
+from .paths import socket_path
+
+CONNECT_TIMEOUT = 2.0
 APPROVAL_TIMEOUT = float(os.environ.get("BUDDY_TIMEOUT", "30"))
 
 
@@ -47,7 +49,7 @@ def _talk(payload: dict, *, want_response: bool) -> dict | None:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(CONNECT_TIMEOUT)
-            sock.connect(SOCKET_PATH)
+            sock.connect(str(socket_path()))
             sock.sendall(json.dumps(payload).encode())
             if not want_response:
                 return None
@@ -63,42 +65,92 @@ def _talk(payload: dict, *, want_response: bool) -> dict | None:
         return None
 
 
-def main():
-    if len(sys.argv) < 2:
-        sys.exit(0)
+def _emit_decision(decision: str, reason: str) -> None:
+    """Write the PreToolUse decision JSON to stdout (the only stdout output)."""
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": reason,
+                }
+            }
+        )
+    )
 
-    mode = sys.argv[1]
 
-    try:
-        ctx = json.loads(sys.stdin.read() or "{}")
-    except json.JSONDecodeError:
-        ctx = {}
+def _pre_tool(ctx: dict) -> None:
+    # User already opted out of permission prompts — nothing to gate.
+    if ctx.get("permission_mode") == "bypassPermissions":
+        return
 
-    if mode == "pre-tool":
-        tool       = ctx.get("tool_name", ctx.get("tool", "unknown"))
-        tool_input = ctx.get("tool_input", {})
-        use_id     = ctx.get("tool_use_id",
-                              f"r{int(time.time() * 1000) % 10 ** 9}")
-        result = _talk({
-            "type":    "pre_tool",
-            "id":      use_id,
-            "tool":    tool,
-            "hint":    _hint(tool, tool_input),
+    tool = ctx.get("tool_name", ctx.get("tool", "unknown"))
+    tool_input = ctx.get("tool_input", {})
+    use_id = ctx.get("tool_use_id", f"r{int(time.time() * 1000) % 10**9}")
+
+    result = _talk(
+        {
+            "type": "pre_tool",
+            "id": use_id,
+            "tool": tool,
+            "hint": _hint(tool, tool_input),
             "timeout": APPROVAL_TIMEOUT,
-        }, want_response=True)
+        },
+        want_response=True,
+    )
 
-        if result and result.get("decision") == "deny":
-            print(f"Denied on hardware buddy ({tool})", file=sys.stderr)
-            sys.exit(2)
+    if result is None:
+        # Bridge unreachable — defer to Claude's own permission flow.
+        return
 
-    elif mode == "post-tool":
-        tool  = ctx.get("tool_name", ctx.get("tool", "unknown"))
-        hint  = _hint(tool, ctx.get("tool_input", {}))
-        entry = f"{tool}: {hint}"[:60]
-        _talk({"type": "post_tool", "tool": tool, "entry": entry,
-               "msg": "Claude Code"}, want_response=False)
+    if APPROVAL_TIMEOUT <= 0:
+        # Display-only mode — contact bridge for the display update only;
+        # never emit a decision regardless of button state.
+        return
 
-    elif mode == "stop":
-        _talk({"type": "stop"}, want_response=False)
+    decision = result.get("decision", "once")
+
+    if decision == "deny":
+        _emit_decision("deny", f"Denied on the Claude buddy (button B) — {tool}")
+    else:
+        # Button A pressed, or timeout elapsed (auto-approve).
+        _emit_decision("allow", f"Approved on the Claude buddy — {tool}")
+
+
+def main() -> None:
+    try:
+        if len(sys.argv) < 2:
+            sys.exit(0)
+
+        mode = sys.argv[1]
+
+        try:
+            ctx = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError:
+            ctx = {}
+
+        if mode == "pre-tool":
+            _pre_tool(ctx)
+
+        elif mode == "post-tool":
+            tool = ctx.get("tool_name", ctx.get("tool", "unknown"))
+            hint = _hint(tool, ctx.get("tool_input", {}))
+            entry = f"{tool}: {hint}"[:60]
+            _talk(
+                {
+                    "type": "post_tool",
+                    "tool": tool,
+                    "entry": entry,
+                    "msg": "Claude Code",
+                },
+                want_response=False,
+            )
+
+        elif mode == "stop":
+            _talk({"type": "stop"}, want_response=False)
+
+    except Exception as exc:
+        print(f"buddy-hook error: {exc}", file=sys.stderr)
 
     sys.exit(0)

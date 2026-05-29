@@ -48,6 +48,11 @@ uv tool install .
 This installs `buddy-app`, `buddy-bridge`, and `buddy-hook` into your uv tool
 bin directory (usually `~/.local/bin`).
 
+**Upgrading:** after `uv tool install .`, restart the daemon (`buddy-app` or
+`buddy-bridge`) so both the server and the hook pick up the new socket path.
+The old `/tmp/buddy-bridge-<uid>.sock` from a previous version becomes an
+orphaned, harmless file; remove it manually if you want a clean `/tmp`.
+
 ## Quick start
 
 **1. Start the menu bar app:**
@@ -70,9 +75,6 @@ buddy-bridge &
 
 ```json
 {
-  "permissions": {
-    "allow": ["Bash(*)", "Read(*)", "Edit(*)"]
-  },
   "hooks": {
     "PreToolUse": [
       {
@@ -95,6 +97,11 @@ buddy-bridge &
 }
 ```
 
+> **Note:** Do not add `permissions.allow` entries alongside these hooks.
+> A broad allow-list bypasses Claude's own permission prompts and, combined
+> with the buddy's fail-open design, would leave no gate at all when the
+> device is asleep or the daemon is not running.
+
 ## Environment variables
 
 | Variable        | Default   | Description |
@@ -113,8 +120,16 @@ BUDDY_TIMEOUT=0 buddy-app
 When `BUDDY_TIMEOUT > 0`, `buddy-hook pre-tool` waits up to that many seconds
 for a button press on the device before returning. Press **A** (front button)
 to approve or **B** (right button) to deny. On timeout the tool is
-auto-approved. If the bridge is unreachable, tools are always auto-approved.
-The menu bar icon switches to `⏸` while waiting.
+auto-approved. The menu bar icon switches to `⏸` while waiting.
+
+If the bridge is unreachable (daemon not running, BLE not connected), the hook
+defers to Claude's own permission system rather than auto-approving. This means
+Claude's normal tool-permission prompts still fire when the buddy is absent.
+
+> **Security note:** The buddy is an awareness and convenience layer, not a
+> security boundary. It is fail-open by design — a crash, disconnection, or
+> timeout always lets the tool proceed. Do not rely on it as your sole gate for
+> sensitive operations.
 
 ## How it works
 
@@ -123,7 +138,7 @@ Claude Code
   │  PreToolUse / PostToolUse / Stop
   ▼
 buddy-hook          (short-lived process, one per event)
-  │  Unix socket  /tmp/buddy-bridge-<uid>.sock
+  │  Unix socket  $TMPDIR/buddy-bridge-<uid>.sock
   ▼
 buddy-bridge        (long-lived daemon, embedded in buddy-app)
   │  BLE / Nordic UART Service
@@ -131,8 +146,9 @@ buddy-bridge        (long-lived daemon, embedded in buddy-app)
 Claude desk buddy
 ```
 
-The socket is created by `buddy-bridge` and is readable only by the owning
-user (`chmod 600`). Messages are newline-terminated JSON.
+The socket is created by `buddy-bridge` at `$TMPDIR/buddy-bridge-<uid>.sock`
+(`$TMPDIR` is a per-user directory on macOS) and is additionally protected by
+`chmod 600`. Messages are newline-terminated JSON.
 
 ## Development
 

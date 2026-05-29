@@ -1,6 +1,7 @@
 """buddy-app — macOS menu bar app for the Claude buddy bridge."""
 
 import asyncio
+import contextlib
 import os
 import plistlib
 import queue
@@ -13,11 +14,9 @@ from .bridge import BuddyBridge
 
 _ICON = {"scanning": "○", "connected": "●", "waiting": "⏸"}
 
-_PLIST_PATH  = os.path.expanduser(
-    "~/Library/LaunchAgents/com.sander.buddy-app.plist"
-)
-_PLIST_LABEL = "com.sander.buddy-app"
-_BUDDY_BIN   = os.path.expanduser("~/.local/bin/buddy-app")
+_PLIST_PATH = os.path.expanduser("~/Library/LaunchAgents/dev.bossan.buddy-app.plist")
+_PLIST_LABEL = "dev.bossan.buddy-app"
+_BUDDY_BIN = os.path.expanduser("~/.local/bin/buddy-app")
 
 
 def _login_enabled() -> bool:
@@ -38,10 +37,8 @@ def _set_login(enabled: bool):
         subprocess.run(["launchctl", "load", _PLIST_PATH], check=False)
     else:
         subprocess.run(["launchctl", "unload", _PLIST_PATH], check=False)
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(_PLIST_PATH)
-        except OSError:
-            pass
 
 
 class BuddyApp(rumps.App):
@@ -51,11 +48,10 @@ class BuddyApp(rumps.App):
         self._q: queue.SimpleQueue = queue.SimpleQueue()
 
         self._device_item = rumps.MenuItem("Scanning…")
-        self._msg_item    = rumps.MenuItem("Ready")
+        self._msg_item = rumps.MenuItem("Ready")
         self._entry_items = [rumps.MenuItem(" ") for _ in range(3)]
-        self._login_item  = rumps.MenuItem("Start at Login",
-                                           callback=self._toggle_login)
-        self._quit_item   = rumps.MenuItem("Quit", callback=self._on_quit)
+        self._login_item = rumps.MenuItem("Start at Login", callback=self._toggle_login)
+        self._quit_item = rumps.MenuItem("Quit", callback=self._on_quit)
 
         self._login_item.state = _login_enabled()
 
@@ -94,10 +90,10 @@ class BuddyApp(rumps.App):
 
     def _apply(self, s: dict):
         connected = s.get("connected", False)
-        waiting   = bool(s.get("waiting", 0))
-        device    = s.get("device_name") or ""
-        msg       = s.get("msg", "")
-        entries   = s.get("entries", [])
+        waiting = bool(s.get("waiting", 0))
+        device = s.get("device_name") or ""
+        msg = s.get("msg", "")
+        entries = s.get("entries", [])
 
         if waiting:
             self.title = _ICON["waiting"]

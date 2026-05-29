@@ -9,9 +9,11 @@ Run once in the background before starting a Claude Code session:
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
+import stat
 import sys
 import time
 from datetime import datetime
@@ -22,8 +24,9 @@ except ImportError:
     print("bleak not found — run: uv tool install ./tools/buddy", file=sys.stderr)
     sys.exit(1)
 
-DEVICE_PREFIX  = os.environ.get("BUDDY_DEVICE", "Claude")
-SOCKET_PATH    = f"/tmp/buddy-bridge-{os.getuid()}.sock"
+from .paths import socket_path
+
+DEVICE_PREFIX = os.environ.get("BUDDY_DEVICE", "Claude")
 HEARTBEAT_SECS = 5
 MAX_APPROVAL_SECS = 180
 
@@ -41,18 +44,24 @@ class BuddyBridge:
         self._device_name: str | None = None
         self.on_status_change = on_status_change
         self.state: dict = {
-            "total": 1, "running": 0, "waiting": 0,
-            "msg": "Claude Code", "entries": [],
-            "tokens": 0, "tokens_today": 0,
+            "total": 1,
+            "running": 0,
+            "waiting": 0,
+            "msg": "Claude Code",
+            "entries": [],
+            "tokens": 0,
+            "tokens_today": 0,
         }
 
     def _emit(self):
         if self.on_status_change:
-            self.on_status_change({
-                **self.state,
-                "connected": self._connected,
-                "device_name": self._device_name,
-            })
+            self.on_status_change(
+                {
+                    **self.state,
+                    "connected": self._connected,
+                    "device_name": self._device_name,
+                }
+            )
 
     # ── BLE ──────────────────────────────────────────────────────────────────
 
@@ -61,16 +70,17 @@ class BuddyBridge:
         while b"\n" in self._rx_buf:
             line, self._rx_buf = self._rx_buf.split(b"\n", 1)
             if line.strip():
-                try:
+                with contextlib.suppress(json.JSONDecodeError, ValueError):
                     self._on_device_msg(json.loads(line.strip()))
-                except (json.JSONDecodeError, ValueError):
-                    pass
 
     def _on_device_msg(self, msg: dict):
-        if msg.get("cmd") == "permission" and self._pending:
-            if msg.get("id") == self._pending["id"]:
-                self._pending["decision"] = msg.get("decision", "once")
-                self._pending["event"].set()
+        if (
+            msg.get("cmd") == "permission"
+            and self._pending
+            and msg.get("id") == self._pending["id"]
+        ):
+            self._pending["decision"] = msg.get("decision", "once")
+            self._pending["event"].set()
 
     def _on_disconnect(self, _client):
         print("Device disconnected.", flush=True)
@@ -87,8 +97,9 @@ class BuddyBridge:
         payload = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
         for i in range(0, len(payload), 200):
             try:
-                await self.client.write_gatt_char(NUS_RX, payload[i:i + 200],
-                                                  response=False)
+                await self.client.write_gatt_char(
+                    NUS_RX, payload[i : i + 200], response=False
+                )
             except Exception:
                 self._connected = False
                 return
@@ -102,10 +113,8 @@ class BuddyBridge:
     async def _heartbeat_loop(self):
         while True:
             if self._connected:
-                try:
+                with contextlib.suppress(Exception):
                     await self._write(self.state)
-                except Exception:
-                    pass
             await asyncio.sleep(HEARTBEAT_SECS)
 
     async def _connect_loop(self):
@@ -114,8 +123,7 @@ class BuddyBridge:
                 print(f"Scanning for '{DEVICE_PREFIX}*'…", flush=True)
                 devices = await BleakScanner.discover(timeout=8.0)
                 target = next(
-                    (d for d in devices
-                     if d.name and d.name.startswith(DEVICE_PREFIX)),
+                    (d for d in devices if d.name and d.name.startswith(DEVICE_PREFIX)),
                     None,
                 )
                 if target is None:
@@ -123,8 +131,7 @@ class BuddyBridge:
                     await asyncio.sleep(10)
                     continue
 
-                print(f"Connecting to {target.name} ({target.address})…",
-                      flush=True)
+                print(f"Connecting to {target.name} ({target.address})…", flush=True)
                 self._device_name = target.name
                 self._disconnect_evt.clear()
                 async with BleakClient(
@@ -147,11 +154,12 @@ class BuddyBridge:
 
     # ── Unix socket ───────────────────────────────────────────────────────────
 
-    async def _handle_hook(self, reader: asyncio.StreamReader,
-                           writer: asyncio.StreamWriter):
+    async def _handle_hook(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ):
         try:
             data = await asyncio.wait_for(reader.read(8192), timeout=5)
-            msg  = json.loads(data)
+            msg = json.loads(data)
             kind = msg.get("type")
 
             if kind == "pre_tool":
@@ -166,8 +174,9 @@ class BuddyBridge:
                 self._emit()
                 writer.write(b"ok")
             elif kind == "post_tool":
-                self.state.update({"running": 0, "waiting": 0,
-                                   "msg": msg.get("msg", "Claude Code")})
+                self.state.update(
+                    {"running": 0, "waiting": 0, "msg": msg.get("msg", "Claude Code")}
+                )
                 self.state.pop("prompt", None)
                 if entry := msg.get("entry"):
                     _log(self.state["entries"], entry)
@@ -175,8 +184,9 @@ class BuddyBridge:
                 self._emit()
                 writer.write(b"ok")
             elif kind == "stop":
-                self.state.update({"running": 0, "waiting": 0,
-                                   "msg": "Claude Code done"})
+                self.state.update(
+                    {"running": 0, "waiting": 0, "msg": "Claude Code done"}
+                )
                 self.state.pop("prompt", None)
                 await self._write(self.state)
                 self._emit()
@@ -188,43 +198,49 @@ class BuddyBridge:
             print(f"Hook error: {exc}", file=sys.stderr)
             writer.write(b"error")
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await writer.drain()
                 writer.close()
-            except Exception:
-                pass
 
     async def _handle_pre_tool(self, msg: dict) -> dict:
-        tool    = msg.get("tool", "unknown")
-        hint    = msg.get("hint", "")
-        req_id  = msg.get("id", f"r{int(time.time() * 1000) % 10 ** 9}")
+        tool = msg.get("tool", "unknown")
+        hint = msg.get("hint", "")
+        req_id = msg.get("id", f"r{int(time.time() * 1000) % 10**9}")
         timeout = min(float(msg.get("timeout", 0)), MAX_APPROVAL_SECS)
 
         self.state["running"] = 1
-        self.state["msg"] = (f"approve: {tool}" if timeout > 0
-                             else f"{tool}: {hint}")[:40]
+        self.state["msg"] = (f"approve: {tool}" if timeout > 0 else f"{tool}: {hint}")[
+            :40
+        ]
         _log(self.state["entries"], self.state["msg"])
 
         if timeout > 0:
             self.state["waiting"] = 1
-            self.state["prompt"] = {"id": req_id, "tool": tool,
-                                    "hint": hint[:43]}
+            self.state["prompt"] = {"id": req_id, "tool": tool, "hint": hint[:43]}
             event = asyncio.Event()
-            self._pending = {"id": req_id, "event": event, "decision": "once"}
+            pending = {"id": req_id, "event": event, "decision": "once"}
+            self._pending = pending
             await self._write(self.state)
             self._emit()
 
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                print(f"Approval timeout ({timeout:.0f} s) for {tool}"
-                      " — auto-approving", flush=True)
+            except TimeoutError:
+                print(
+                    f"Approval timeout ({timeout:.0f} s) for {tool} — auto-approving",
+                    flush=True,
+                )
 
-            decision = self._pending["decision"]
-            self._pending = None
-            self.state.update({"waiting": 0,
-                               "msg": ("denied" if decision == "deny"
-                                       else "approved") + f": {tool}"})
+            decision = pending["decision"]
+            if self._pending is pending:
+                self._pending = None
+            self.state.update(
+                {
+                    "waiting": 0,
+                    "msg": ("denied" if decision == "deny" else "approved")
+                    + f": {tool}",
+                }
+            )
             self.state.pop("prompt", None)
             await self._write(self.state)
             self._emit()
@@ -237,12 +253,22 @@ class BuddyBridge:
     # ── Run ───────────────────────────────────────────────────────────────────
 
     async def run(self):
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
+        p = socket_path()
+        if len(str(p).encode()) >= 104:
+            raise RuntimeError(f"socket path too long for AF_UNIX: {p}")
 
-        server = await asyncio.start_unix_server(self._handle_hook, SOCKET_PATH)
-        os.chmod(SOCKET_PATH, 0o600)
-        print(f"Socket: {SOCKET_PATH}", flush=True)
+        # Remove a stale socket only if it's one we own; never clobber
+        # an unrelated file that happens to share the path.
+        try:
+            st = p.lstat()
+            if stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid():
+                p.unlink()
+        except FileNotFoundError:
+            pass
+
+        server = await asyncio.start_unix_server(self._handle_hook, str(p))
+        p.chmod(0o600)
+        print(f"Socket: {p}", flush=True)
 
         async with server:
             await asyncio.gather(
@@ -252,10 +278,8 @@ class BuddyBridge:
             )
 
     def cleanup(self):
-        try:
-            os.unlink(SOCKET_PATH)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            socket_path().unlink()
 
 
 def _log(entries: list, msg: str):
@@ -274,12 +298,10 @@ def main():
             bridge.cleanup()
             task.cancel()
 
-        signal.signal(signal.SIGINT,  _stop)
+        signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
 
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     asyncio.run(_run())
