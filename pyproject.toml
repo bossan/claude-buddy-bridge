@@ -1,6 +1,6 @@
 [project]
 name = "claude-buddy-bridge"
-version = "0.1.1"
+version = "1.0.0"
 description = "BLE bridge and Claude Code hooks for the Claude desk buddy"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
