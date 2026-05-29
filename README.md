@@ -1,17 +1,31 @@
 # claude-buddy-bridge
 
-Python host-side bridge for the **Claude desk buddy** — a small BLE device
+Python host-side bridge for the **[Claude desk buddy](https://github.com/anthropics/claude-desktop-buddy)** — a small BLE device
 that shows live Claude Code activity on its display and can optionally gate
 tool calls with a hardware button press.
 
-Two CLI programs ship here:
+## What it does
 
-**`buddy-bridge`** — persistent daemon that maintains a BLE connection to the
-device, sends heartbeats every 5 seconds so the display stays live, syncs the
-device clock on connect, and listens on a Unix socket for events from
-`buddy-hook`.
+**`buddy-app`** is a macOS menu bar app that runs the bridge in the background.
 
-**`buddy-hook`** — called by Claude Code for every hook event
+![Menu bar screenshot](docs/screenshot.png)
+
+The menu bar icon shows the connection state at a glance:
+
+- `○` — scanning for the device
+- `●` — connected
+- `⏸` — waiting for hardware approval
+
+The dropdown shows the current tool or status message and a short activity log.
+A "Start at Login" toggle installs or removes a LaunchAgent so the app starts
+automatically on login.
+
+**`buddy-bridge`** is the underlying daemon (also available as a standalone CLI
+if you prefer not to use the menu bar app). It maintains the BLE connection,
+sends heartbeats every 5 seconds so the display stays live, syncs the device
+clock on connect, and listens on a Unix socket for events from `buddy-hook`.
+
+**`buddy-hook`** is called by Claude Code for every hook event
 (`PreToolUse`, `PostToolUse`, `Stop`). It forwards each event to
 `buddy-bridge` over the Unix socket and exits immediately. If the bridge is
 not running, `buddy-hook` exits 0 so Claude Code is never blocked by a
@@ -31,19 +45,25 @@ From this repository root:
 uv tool install .
 ```
 
-This installs both `buddy-bridge` and `buddy-hook` into your uv tool bin
-directory (usually `~/.local/bin`).
+This installs `buddy-app`, `buddy-bridge`, and `buddy-hook` into your uv tool
+bin directory (usually `~/.local/bin`).
 
 ## Quick start
 
-**1. Start the bridge** (once per login session, before starting Claude Code):
+**1. Start the menu bar app:**
+
+```bash
+buddy-app
+```
+
+The icon appears in the menu bar and the bridge starts automatically. Use
+**Start at Login** from the menu to have it launch on every login.
+
+Alternatively, run the daemon directly (headless):
 
 ```bash
 buddy-bridge &
 ```
-
-The bridge scans for a BLE device whose name starts with `Claude`, connects,
-and starts sending heartbeats. It reconnects automatically on disconnect.
 
 **2. Wire up Claude Code hooks** — merge the block below into
 `~/.claude/settings.json` (or merge from [`hooks.json`](hooks.json)):
@@ -79,13 +99,13 @@ and starts sending heartbeats. It reconnects automatically on disconnect.
 
 | Variable        | Default   | Description |
 | --------------- | --------- | ----------- |
-| `BUDDY_TIMEOUT` | `0`       | Seconds to wait for a deny on the device before auto-approving a `PreToolUse`. `0` = display-only mode; the hook never blocks Claude Code. |
+| `BUDDY_TIMEOUT` | `30`      | Seconds to wait for a deny on the device before auto-approving a `PreToolUse`. `0` = display-only mode; the hook never blocks Claude Code. |
 | `BUDDY_DEVICE`  | `Claude`  | BLE device name prefix to scan for. |
 
-Example — enable hardware approval with a 30-second timeout:
+Example — disable hardware approval (display only):
 
 ```bash
-BUDDY_TIMEOUT=30 buddy-bridge &
+BUDDY_TIMEOUT=0 buddy-app
 ```
 
 ## Approval flow
@@ -94,6 +114,7 @@ When `BUDDY_TIMEOUT > 0`, `buddy-hook pre-tool` waits up to that many seconds
 for a button press on the device before returning. Press **A** (front button)
 to approve or **B** (right button) to deny. On timeout the tool is
 auto-approved. If the bridge is unreachable, tools are always auto-approved.
+The menu bar icon switches to `⏸` while waiting.
 
 ## How it works
 
@@ -104,7 +125,7 @@ Claude Code
 buddy-hook          (short-lived process, one per event)
   │  Unix socket  /tmp/buddy-bridge-<uid>.sock
   ▼
-buddy-bridge        (long-lived daemon)
+buddy-bridge        (long-lived daemon, embedded in buddy-app)
   │  BLE / Nordic UART Service
   ▼
 Claude desk buddy
@@ -117,5 +138,6 @@ user (`chmod 600`). Messages are newline-terminated JSON.
 
 ```bash
 uv sync
-uv run buddy-bridge   # run without installing
+uv run buddy-app      # menu bar app
+uv run buddy-bridge   # headless daemon
 ```
