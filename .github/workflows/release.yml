@@ -21,6 +21,9 @@ jobs:
       - name: Build
         run: uv build
 
+      - name: Retag wheel as macOS-specific
+        run: uvx wheel tags --platform-tag macosx_11_0_universal2 --remove dist/*.whl
+
       - name: Upload to release
         run: gh release upload ${{ github.ref_name }} dist/* --clobber
         env:
