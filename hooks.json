@@ -3,14 +3,24 @@
     "Merge the 'hooks' block into ~/.claude/settings.json.",
     "Install first: uv tool install path/to/claude-buddy-bridge",
     "Start the daemon: buddy-bridge &",
-    "BUDDY_TIMEOUT=0  — display only, never blocks Claude Code (default)",
-    "BUDDY_TIMEOUT=30 — wait up to 30 s for deny on device, then auto-approve"
+    "BUDDY_TIMEOUT=0  — display only, never blocks Claude Code",
+    "BUDDY_TIMEOUT=30 — wait up to 30 s for deny on device, then auto-approve (default)",
+    "",
+    "Permission gating — keep ONE of PreToolUse or PermissionRequest, not both.",
+    "  PreToolUse: gates every tool call (even ones already in your allow list).",
+    "  PermissionRequest: gates only calls Claude Code would otherwise prompt for."
   ],
   "hooks": {
     "PreToolUse": [
       {
         "matcher": ".*",
         "hooks": [{ "type": "command", "command": "buddy-hook pre-tool" }]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": ".*",
+        "hooks": [{ "type": "command", "command": "buddy-hook permission-request" }]
       }
     ],
     "PostToolUse": [

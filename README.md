@@ -26,10 +26,10 @@ sends heartbeats every 5 seconds so the display stays live, syncs the device
 clock on connect, and listens on a Unix socket for events from `buddy-hook`.
 
 **`buddy-hook`** is called by Claude Code for every hook event
-(`PreToolUse`, `PostToolUse`, `Stop`). It forwards each event to
-`buddy-bridge` over the Unix socket and exits immediately. If the bridge is
-not running, `buddy-hook` exits 0 so Claude Code is never blocked by a
-missing daemon.
+(`PreToolUse` or `PermissionRequest`, `PostToolUse`, `Stop`). It forwards
+each event to `buddy-bridge` over the Unix socket and exits immediately. If
+the bridge is not running, `buddy-hook` exits 0 so Claude Code is never
+blocked by a missing daemon.
 
 ## Requirements
 
@@ -70,8 +70,13 @@ Alternatively, run the daemon directly (headless):
 buddy-bridge &
 ```
 
-**2. Wire up Claude Code hooks** — merge the block below into
-`~/.claude/settings.json` (or merge from [`hooks.json`](hooks.json)):
+**2. Wire up Claude Code hooks** — merge one of the blocks below into
+`~/.claude/settings.json` (or merge from [`hooks.json`](hooks.json)).
+
+Choose a gating mode and use its block; do not combine them — using both
+causes double-gating on permission-required tools.
+
+**Option A — gate every tool call** (`PreToolUse`):
 
 ```json
 {
@@ -97,16 +102,41 @@ buddy-bridge &
 }
 ```
 
-> **Note:** Do not add `permissions.allow` entries alongside these hooks.
-> A broad allow-list bypasses Claude's own permission prompts and, combined
-> with the buddy's fail-open design, would leave no gate at all when the
-> device is asleep or the daemon is not running.
+**Option B — gate only calls Claude Code would prompt for** (`PermissionRequest`):
+
+This is lighter-weight: tools already in your `permissions.allow` list pass
+through without a button press; the buddy only gates calls that would
+otherwise show a permission dialog.
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": ".*",
+        "hooks": [{ "type": "command", "command": "buddy-hook permission-request" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [{ "type": "command", "command": "buddy-hook post-tool" }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "buddy-hook stop" }]
+      }
+    ]
+  }
+}
+```
 
 ## Environment variables
 
 | Variable        | Default   | Description |
 | --------------- | --------- | ----------- |
-| `BUDDY_TIMEOUT` | `30`      | Seconds to wait for a deny on the device before auto-approving a `PreToolUse`. `0` = display-only mode; the hook never blocks Claude Code. |
+| `BUDDY_TIMEOUT` | `30`      | Seconds to wait for a deny on the device before auto-approving. `0` = display-only mode; the hook never blocks Claude Code. Applies to both `pre-tool` and `permission-request` modes. |
 | `BUDDY_DEVICE`  | `Claude`  | BLE device name prefix to scan for. |
 
 Example — disable hardware approval (display only):
@@ -117,10 +147,14 @@ BUDDY_TIMEOUT=0 buddy-app
 
 ## Approval flow
 
-When `BUDDY_TIMEOUT > 0`, `buddy-hook pre-tool` waits up to that many seconds
-for a button press on the device before returning. Press **A** (front button)
-to approve or **B** (right button) to deny. On timeout the tool is
-auto-approved. The menu bar icon switches to `⏸` while waiting.
+When `BUDDY_TIMEOUT > 0`, the hook waits up to that many seconds for a button
+press on the device before returning. Press **A** (front button) to approve or
+**B** (right button) to deny. On timeout the tool is auto-approved. The menu
+bar icon switches to `⏸` while waiting.
+
+This applies to both gating modes:
+- `PreToolUse` / `buddy-hook pre-tool` — fires for every tool call
+- `PermissionRequest` / `buddy-hook permission-request` — fires only when Claude Code would otherwise show a permission dialog
 
 If the bridge is unreachable (daemon not running, BLE not connected), the hook
 defers to Claude's own permission system rather than auto-approving. This means
@@ -135,7 +169,7 @@ Claude's normal tool-permission prompts still fire when the buddy is absent.
 
 ```
 Claude Code
-  │  PreToolUse / PostToolUse / Stop
+  │  PreToolUse (or PermissionRequest) / PostToolUse / Stop
   ▼
 buddy-hook          (short-lived process, one per event)
   │  Unix socket  $TMPDIR/buddy-bridge-<uid>.sock

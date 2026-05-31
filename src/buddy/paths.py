@@ -1,10 +1,15 @@
 import os
-import tempfile
 from pathlib import Path
 
 
 def socket_path() -> Path:
-    # tempfile.gettempdir() honours $TMPDIR. On macOS that resolves to a
-    # per-user directory under /var/folders/ with 0700 perms, which is
-    # stronger than relying on chmod 600 inside a shared /tmp.
-    return Path(tempfile.gettempdir()) / f"buddy-bridge-{os.getuid()}.sock"
+    # Use XDG_RUNTIME_DIR when available; fall back to ~/.local/run/.
+    # Deliberately avoids tempfile.gettempdir() / $TMPDIR because Claude Code
+    # overrides $TMPDIR for hook processes, causing the hook and daemon to
+    # resolve different paths and never find each other.
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return Path(runtime) / "buddy-bridge.sock"
+    base = Path.home() / ".local" / "run"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "buddy-bridge.sock"

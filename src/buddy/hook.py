@@ -65,8 +65,7 @@ def _talk(payload: dict, *, want_response: bool) -> dict | None:
         return None
 
 
-def _emit_decision(decision: str, reason: str) -> None:
-    """Write the PreToolUse decision JSON to stdout (the only stdout output)."""
+def _emit_pre_tool_decision(decision: str, reason: str) -> None:
     print(
         json.dumps(
             {
@@ -74,6 +73,19 @@ def _emit_decision(decision: str, reason: str) -> None:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": decision,
                     "permissionDecisionReason": reason,
+                }
+            }
+        )
+    )
+
+
+def _emit_permission_request_decision(behavior: str) -> None:
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": behavior},
                 }
             }
         )
@@ -112,10 +124,41 @@ def _pre_tool(ctx: dict) -> None:
     decision = result.get("decision", "once")
 
     if decision == "deny":
-        _emit_decision("deny", f"Denied on the Claude buddy (button B) — {tool}")
+        _emit_pre_tool_decision("deny", f"Denied on the Claude buddy (button B) — {tool}")
     else:
-        # Button A pressed, or timeout elapsed (auto-approve).
-        _emit_decision("allow", f"Approved on the Claude buddy — {tool}")
+        _emit_pre_tool_decision("allow", f"Approved on the Claude buddy — {tool}")
+
+
+def _permission_request(ctx: dict) -> None:
+    if ctx.get("permission_mode") == "bypassPermissions":
+        return
+
+    tool = ctx.get("tool_name", ctx.get("tool", "unknown"))
+    tool_input = ctx.get("tool_input", {})
+    use_id = ctx.get("tool_use_id", f"r{int(time.time() * 1000) % 10**9}")
+
+    result = _talk(
+        {
+            "type": "pre_tool",
+            "id": use_id,
+            "tool": tool,
+            "hint": _hint(tool, tool_input),
+            "timeout": APPROVAL_TIMEOUT,
+        },
+        want_response=True,
+    )
+
+    if result is None:
+        return
+
+    if APPROVAL_TIMEOUT <= 0:
+        return
+
+    decision = result.get("decision", "once")
+    if decision == "deny":
+        _emit_permission_request_decision("deny")
+    else:
+        _emit_permission_request_decision("allow")
 
 
 def main() -> None:
@@ -132,6 +175,9 @@ def main() -> None:
 
         if mode == "pre-tool":
             _pre_tool(ctx)
+
+        elif mode == "permission-request":
+            _permission_request(ctx)
 
         elif mode == "post-tool":
             tool = ctx.get("tool_name", ctx.get("tool", "unknown"))
