@@ -124,7 +124,7 @@ def _pre_tool(ctx: dict) -> None:
     decision = result.get("decision", "once")
 
     if decision == "deny":
-        _emit_pre_tool_decision("deny", f"Denied on the Claude buddy (button B) — {tool}")
+        _emit_pre_tool_decision("deny", f"Denied on buddy (button B) — {tool}")
     else:
         _emit_pre_tool_decision("allow", f"Approved on the Claude buddy — {tool}")
 
